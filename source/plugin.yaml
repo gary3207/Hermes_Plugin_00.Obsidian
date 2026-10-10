@@ -1,0 +1,5 @@
+name: hermes-archive-context
+version: 1.1.0
+description: Portable local Hermes work records in an Obsidian Vault, with safe reinstalls and bundled guidance.
+author: Gary-Y-Lee
+license: MIT
