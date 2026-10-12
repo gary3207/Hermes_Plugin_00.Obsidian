@@ -451,6 +451,32 @@ class ArchiveCheck(unittest.TestCase):
         self.assertTrue((self.vault / "60_Operations/00_Archive-Health.md").exists())
 
 
+    def test_current_summary_template_preserves_authored_history_on_repeat(self):
+        archive = load_archive()
+        with closing(sqlite3.connect(self.home / "projects.db")) as db, db:
+            db.execute("CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT,primary_path TEXT)")
+            db.execute("INSERT INTO projects VALUES(?,?,?)", ("p1", "Summary fixture", str(self.root / "project")))
+        result = archive.run(self.cfg)
+        self.assertEqual(result["errors"], [])
+        current = next((self.vault / "10_Projects").glob("*/30_Current-State.md"))
+        text = current.read_text(encoding="utf-8")
+        self.assertIn("## 현재 요약", text)
+        self.assertIn("## 작업 이력", text)
+        self.assertLess(text.index("## 현재 요약"), text.index("## 작업 이력"))
+        for field in ("현재 목표", "현재 단계", "확인된 결과", "남은 작업·차단", "다음 행동", "근거", "마지막 갱신"):
+            self.assertIn("| " + field + " |", text)
+        self.assertIn("미정리", text)
+        self.assertIn("해당 없음", text)
+        template = self.vault / "90_Templates/Current-State.md"
+        self.assertEqual(template.read_text(encoding="utf-8"), text)
+        custom = text.replace("| 현재 목표 | 미정리 |", "| 현재 목표 | 사용자 작성 목표 |") + "\n기존 작업 이력 보존\n"
+        current.write_text(custom, encoding="utf-8")
+        template.write_text("사용자 템플릿", encoding="utf-8")
+        result = archive.run(self.cfg)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(current.read_text(encoding="utf-8"), custom)
+        self.assertEqual(template.read_text(encoding="utf-8"), "사용자 템플릿")
+
     def test_artifacts_are_paths_not_unearned_validation(self):
         archive = load_archive()
         work = self.root / "project"

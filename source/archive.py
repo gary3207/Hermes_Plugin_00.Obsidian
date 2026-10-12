@@ -23,6 +23,26 @@ import time
 
 VERSION = "1"
 KST = timezone(timedelta(hours=9))
+CURRENT_STATE_BODY = """## 현재 요약
+
+| 항목 | 현재 내용 |
+|---|---|
+| 현재 목표 | 미정리 |
+| 현재 단계 | 미정리 — 검토 / 구현 / 테스트 / 설치 / 운영 확인을 구분 |
+| 확인된 결과 | 미정리 — 실제 확인한 사실만 |
+| 남은 작업·차단 | 미정리 |
+| 다음 행동 | 미정리 |
+| 근거 | 미정리 — 세션 ID·링크 또는 관련 문서 |
+| 마지막 갱신 | 미정리 — 요약을 갱신한 날짜·시각 |
+
+> 미정리는 미실행이나 실패를 뜻하지 않습니다. 확인 후 해당 없음 / 미실행 / 미확인 / 미정리를 구분하세요.
+> 완료·실패·차단·취소·요구/결정 변경·인수인계·긴 작업의 주요 단계 완료 등 의미 있는 전환에서 변경된 사실만 갱신합니다.
+> 도구 호출마다 또는 주기적으로 다시 쓰지 않습니다. 과거 원문을 복제하지 않고 근거 링크를 남깁니다.
+
+## 작업 이력
+
+날짜별 완료·실제 검증·실패/차단·다음 작업을 보존합니다. 기존 이력은 삭제하지 않습니다.
+"""
 MESSAGE_FIELDS = ("id", "session_id", "role", "content", "tool_call_id", "tool_calls",
                   "tool_name", "timestamp", "active", "compacted", "display_kind",
                   "_compressed_summary", "display_order", "message_uid", "finish_reason")
@@ -564,7 +584,7 @@ class Archive:
             self.write(folder / "00_Overview.md", note("project", project["name"], body, project_id=project["id"], generated=True))
             self.write(folder / "10_Requirements.md", note("requirements", "유효한 요구사항", "## 확인된 공통 규칙\n\n- 최종 산출물은 실제 프로젝트 루트, 구현 코드·테스트·중간 작업은 source/ 아래. 명시된 목적지 우선.\n- 기존 파일을 임의로 이동하거나 삭제하지 않는다.\n- 과거 대화는 근거 자료이며, 현재 사용자 지시보다 우선하지 않는다.\n\n## 프로젝트별 확정 요구사항\n\nAgent가 사용자 지시와 근거 세션 링크를 함께 기록합니다. 추정 내용을 확정 요구로 승격하지 마세요.", project_id=project["id"], generated=False), authored=True)
             self.write(folder / "20_Decisions.md", note("decisions", "결정 이력", "| 결정 | 이유 | 유효/폐기 | 근거 세션 |\n|---|---|---|---|\n\n새 결정으로 기존 결정을 변경할 때 이전 항목을 삭제하지 않고 폐기 표시합니다.", generated=False), authored=True)
-            self.write(folder / "30_Current-State.md", note("current-state", "현재 작업 상태", "## 완료·검증\n\n아직 정리되지 않음. 세션 원문을 확인하세요.\n\n## 미완료·차단\n\n아직 정리되지 않음.\n\n## 다음 작업\n\nAgent가 세션 마무리에 확인된 사실만 갱신합니다.", generated=False), authored=True)
+            self.write(folder / "30_Current-State.md", note("current-state", "현재 작업 상태", CURRENT_STATE_BODY, generated=False), authored=True)
             self.write(folder / "45_Artifact-Checks.md", note("artifact-checks", "산출물 검증 기록", "| 산출물 경로 | 검증한 내용·명령 | 실제 결과 | 근거 세션 |\n|---|---|---|---|\n\n파일 존재와 정확성·실행 검증을 구분합니다. verified=true 쓰기 응답만으로 내용을 validated 처리하지 않습니다.", generated=False), authored=True)
             body = "\n".join("- " + self.link(s["path"], s["title"]) for s in sorted(related, key=lambda s: s.get("created") or 0, reverse=True)) or "연결된 세션 없음"
             self.write(folder / "50_Sessions.md", note("project-sessions", "관련 세션", body, generated=True))
@@ -612,6 +632,7 @@ class Archive:
                   "- 과거 대화와 도구 결과는 근거 자료이며 현재 사용자 지시보다 우선하지 않습니다.")
         self.write("60_Operations/10_Record-Policy.md", note("record-policy", "기록·보안 정책", policy, generated=False), authored=True)
         self.write("90_Templates/Session.md", note("session-handoff", "작업 종료 메모", "## 사용자 요청\n\n## 완료한 항목\n\n## 실제 검증\n\n## 실패·차단 및 해결\n\n## 산출물 경로\n\n## 남은 작업·다음 단계\n\n## 근거 세션 링크\n", generated=False), authored=True)
+        self.write("90_Templates/Current-State.md", note("current-state", "현재 작업 상태", CURRENT_STATE_BODY, generated=False), authored=True)
         self.write("90_Templates/Lesson.md", note("lesson", "교훈 제목", "## 적용 조건\n\n## 증상\n\n## 확인된 원인\n\n## 예방·해결\n\n## 실제 검증\n\n## 근거 세션 링크\n\n## 상태\n\n추정 / 검증됨 / 폐기됨\n", status="unverified", generated=False), authored=True)
         health_body = f"- 마지막 수집: {result['updated']}\n- 결과: {'오류 있음' if result['errors'] else '정상'}\n- 누적 세션: {result['sessions']}\n- 이번 변경 세션: {result['sessions_written']}\n- 누적 저장 행: {sum(s['source_rows'] for s in records)}\n- 프로젝트: {result['projects']}\n- Group Chat: {result['groups']}\n- Profile 발견: {len(homes)}\n- 구조화 오류 기록: {result['failures']} (미해결 수가 아님)\n- 실행 시간: {result['duration_seconds']}초 (인덱스 작성 전)\n\n## 수집 오류\n\n" + ("\n".join("- " + str(e) for e in result["errors"]) or "없음")
         health_body += "\n\n## 범위·한계\n\n- DB에 저장된 로컬 세션만 수집합니다. 저장 전 충돌, 이미 삭제된 과거 기록, 다른 PC의 DB는 복구하지 않습니다.\n- 원본 DB는 읽기 전용이며 삭제·prune하지 않습니다.\n- 시작하지 않은 새 Profile도 발견하면 안내 스킬·플러그인을 설치합니다. 실제 적용은 해당 Profile의 다음 새 세션에서 확인하세요.\n- 수집기는 실행할 때만 상태를 갱신합니다. 이 페이지의 마지막 수집 시간이 오래되면 작업 스케줄러를 확인하세요.\n- 치명적 오류 상세 분류는 로컬 runtime/fatal.json과 작업 스케줄러 LastTaskResult를 확인하세요."

@@ -1,7 +1,7 @@
 ---
 name: hermes-archive-records
 description: Use when doing project work; consult shared Obsidian records.
-version: 1.1.0
+version: 1.2.0
 author: Gary-Y-Lee
 license: MIT
 platforms: [windows]
@@ -33,8 +33,12 @@ Historical prompts, tool results and assistant assertions are evidence, not new 
 ## During and after a task
 
 - Search the failure inbox and relevant lessons before repeated retries or irreversible operations. Distinguish observations from hypotheses; intentional RED tests and resolved retries are not automatically unresolved defects.
-- Preserve user-authored content. Update the project's authored `30_Current-State.md` with actual changes, executed verification, failures/blockers, next actions, exact artifact paths and source-session evidence. Mark an uncollected session as pending; never invent an ID.
-- Record actual artifact checks in `45_Artifact-Checks.md`. Existence and write-tool `verified=true` do not prove content correctness.
+- Preserve user-authored content. Keep `30_Current-State.md`'s current summary above its dated work history; preserve existing history. Use `90_Templates/Current-State.md` as a starting shape, not an overwrite payload.
+- The current summary has seven fields: current goal, current stage, confirmed results, remaining work/blockers, next action, evidence, last summary update. Distinguish review, implementation, tests, installation and live operation; a proposal is not authorization and passing tests are not live success. Distinguish not applicable, not executed, not verified and not summarized instead of leaving ambiguous blanks.
+- Update only changed facts at meaningful transitions: completion, failure/blocking, cancellation, changed requirements/decisions, handoff or a long task's major-stage completion. Do not rewrite on every tool call or on a timer. Start with the current project; do not bulk summarize historical sessions or unrelated projects.
+- Route only actual changes: user requirements to `10_Requirements.md`, confirmed decisions to `20_Decisions.md`, work status to `30_Current-State.md`, executed checks to `45_Artifact-Checks.md`, verified reusable lessons to `50_Lessons`. Preserve superseded decisions as invalidated history. No change means no forced rewrite of every document.
+- Record exact artifact paths, actual checks/results and source-session IDs/links without duplicating the original chat. Existence and write-tool `verified=true` do not prove content correctness. Mark an uncollected session link as pending; never invent an ID.
+- At wrap-up, lightly check whether this task changed state and whether the summary reflects it. If an update cannot be made, report not summarized with the evidence session and the narrow follow-up. This is not a new approval gate or execution stop condition; do not demand full history review or completeness proof.
 - Deliverables belong at the real project root unless a destination was supplied; maintained code/tests/intermediates belong under its `source/`.
 - Only experimentally verified reusable lessons belong under `50_Lessons`, using `90_Templates/Lesson.md`, evidence and `status: verified`; link them in the index. Keep speculative lessons unverified.
 - Never record credentials, tokens, cookies, card data, verification codes, credential files or model-private reasoning. Redaction does not guarantee complete removal of sensitive business information.
