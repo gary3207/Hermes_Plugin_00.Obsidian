@@ -77,6 +77,20 @@ class ArchiveCheck(unittest.TestCase):
             os.rmdir(alias) if os.name == "nt" else alias.unlink()
         self.tmp.cleanup()
 
+    def test_summary_records_model_effort_and_tokens(self):
+        archive = load_archive()
+        with closing(sqlite3.connect(self.home / "state.db")) as db, db:
+            for col in ("model TEXT", "model_config TEXT", "input_tokens INTEGER", "output_tokens INTEGER", "estimated_cost_usd REAL"):
+                db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+            db.execute("UPDATE sessions SET model=?, model_config=?, input_tokens=1234, output_tokens=56, estimated_cost_usd=0.5",
+                       ("gpt-x", '{"reasoning_config":{"effort":"high"},"_usage_anchor":{"base_last_fp":"FP_MUST_NOT_EXPORT"}}'))
+        self.assertEqual(archive.run(self.cfg)["errors"], [])
+        summary = next(self.vault.glob("40_Sessions/**/00_Summary.md")).read_text(encoding="utf-8")
+        self.assertIn("모델: `gpt-x` · Effort: `high`", summary)
+        self.assertIn("입력 1,234 · 출력 56", summary)
+        self.assertIn('effort: "high"', summary)
+        self.assertNotIn("FP_MUST_NOT_EXPORT", summary)
+
     def test_nested_folder_links_preserve_original_conversation(self):
         archive = load_archive()
         self.cfg.pop("archive_root")

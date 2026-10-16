@@ -49,6 +49,20 @@ MESSAGE_FIELDS = ("id", "session_id", "role", "content", "tool_call_id", "tool_c
 SESSION_FIELDS = ("id", "title", "source", "cwd", "profile_name", "parent_session_id",
                   "started_at", "ended_at", "end_reason", "last_activity_at", "model",
                   "chat_id", "chat_type", "thread_id", "message_count", "tool_call_count", "archived")
+# Kept out of SESSION_FIELDS so 10_Conversation.md front matter stays unchanged.
+USAGE_FIELDS = ("model_config", "billing_provider", "api_call_count", "input_tokens", "output_tokens",
+                "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd")
+
+
+def usage(session):
+    """Model/effort/token facts for the summary; model_config is reduced to effort only."""
+    try:
+        effort = (json.loads(session.get("model_config") or "{}").get("reasoning_config") or {}).get("effort")
+    except (ValueError, AttributeError):
+        effort = None
+    out = {"model": session.get("model"), "effort": effort, "provider": session.get("billing_provider")}
+    out.update({k: session.get(k) for k in USAGE_FIELDS[2:]})
+    return out
 
 
 def packed(value):
@@ -460,17 +474,20 @@ class Archive:
         title = inline(self.clean(session.get("title") or session["id"]))
         user = next((m.get("content") or "" for m in public if m["role"] == "user"), "사용자 Prompt 없음")
         last = next((m.get("content") or "" for m in reversed(public) if m["role"] == "assistant"), "공개 응답 없음")
+        u = usage(session)
         body = (f"- Session ID: `{session['id']}`\n- Profile: `{profile}`\n- 시작: {stamp(session.get('started_at'))}\n"
                 f"- 원본 행: {len(messages)}; 기록 행: {len(allowed)}; 숨김/시스템 등 제외: {len(messages)-len(allowed)}\n"
                 f"- 원본 위치: `{session.get('cwd') or '미분류'}`\n- 부모 세션: `{session.get('parent_session_id') or '없음'}`\n"
                 f"- 세션 상태: {'종료: ' + str(session.get('end_reason')) if session.get('ended_at') else '종료 미기록 (진행 중이라고 단정하지 않음)'}\n"
+                f"- 모델: `{u['model'] or '미기록'}` · Effort: `{u['effort'] or '미기록'}` · Provider: `{u['provider'] or '미기록'}` · API 호출: {u['api_call_count'] or 0}\n"
+                f"- Token: 입력 {u['input_tokens'] or 0:,} · 출력 {u['output_tokens'] or 0:,} · Reasoning {u['reasoning_tokens'] or 0:,} · Cache 읽기 {u['cache_read_tokens'] or 0:,} · Cache 쓰기 {u['cache_write_tokens'] or 0:,} · 추정 비용 ${u['estimated_cost_usd'] or 0:.4f} (구독 Provider는 0으로 표시될 수 있음)\n"
                 f"- {self.link(folder / '10_Conversation.md', '사용자 Prompt·공개 응답')}\n"
                 + (f"- {self.link(folder / '20_Tools.md', '도구 실행·검증 근거')}\n" if tool else "")
                 + "\n## 최초 요청 발췌\n\n" + fenced(self.clean(str(user))[:1600])
                 + "\n\n## 최근 Agent 응답 발췌\n\n> 응답 발췌는 완료 판정·내용 검증이 아닙니다. 전체 원문을 확인하세요.\n\n" + fenced(self.clean(str(last))[:2000])
                 + "\n\n## 실패·차단 기록\n\n")
         body += "\n".join(f"- m-{f['message_id']} · {f['tool']} · {self.link(folder / ('20_Tools.md' if f['tool'] != 'assistant' else '10_Conversation.md'))}\n\n{fenced(f['detail'])}" for f in found) or "구조화된 오류로 확인된 항목 없음. 자유문장의 오류는 자동 판정하지 않습니다."
-        text = note("session", title, body, session_id=session["id"], profile=profile, created=stamp(session.get("started_at")), failures=len(found), status="ended" if session.get("ended_at") else "unfinalized", archived_rows=len(allowed), source_rows=len(messages), generated=True)
+        text = note("session", title, body, session_id=session["id"], profile=profile, created=stamp(session.get("started_at")), failures=len(found), status="ended" if session.get("ended_at") else "unfinalized", archived_rows=len(allowed), source_rows=len(messages), parent_session=session.get("parent_session_id"), **{k: u[k] for k in ("model", "effort", "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "estimated_cost_usd")}, generated=True)
         content_hash = digest(packed({"session": session, "messages": messages}))
         paths = [str(folder / "00_Summary.md").replace("\\", "/"), str(folder / "10_Conversation.md").replace("\\", "/")]
         outputs = {paths[0]: text, paths[1]: self.render(session, public)}
@@ -778,7 +795,7 @@ def run(cfg, force=False):
                 if not {"sessions", "messages"}.issubset(tables(db)):
                     raise RuntimeError("Unsupported state.db schema")
                 # ponytail: O(session count) metadata; indexed message reads only for recent/changed sessions.
-                for s in rows(db, "sessions", SESSION_FIELDS, order="ORDER BY started_at,id"):
+                for s in rows(db, "sessions", SESSION_FIELDS + USAGE_FIELDS, order="ORDER BY started_at,id"):
                     try:
                         existing = archive.state["sessions"].get(f"{profile}:{s['id']}", {})
                         signature = digest(packed(s))
