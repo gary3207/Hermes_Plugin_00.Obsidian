@@ -10,7 +10,7 @@ Hermes Core/Desktop/Gateway를 수정하지 않습니다. Obsidian 앱용 플러
 
 ```bash
 gh auth login
-hermes plugins install Gary-Y-Lee/Hermes_Plugin_Obsidian/source --enable
+hermes plugins install gary3207/Hermes_Plugin_00.Obsidian/source --enable
 ```
 
 이후 사용자가 지정할 값은 **Obsidian Vault 경로와 Vault 안의 기록 폴더** 두 개입니다.
@@ -87,7 +87,7 @@ python "<config.source>/archive.py" --config "<runtime>/config.json"
 재현 가능한 설치는 GitHub의 정확한 40자리 커밋 SHA로 고정할 수 있습니다.
 
 ```bash
-hermes plugins install Gary-Y-Lee/Hermes_Plugin_Obsidian/source --ref <40자리-커밋-SHA> --enable
+hermes plugins install gary3207/Hermes_Plugin_00.Obsidian/source --ref <40자리-커밋-SHA> --enable
 ```
 
 고정 버전 변경은 실제 커밋을 확인한 뒤 동일 소스 재설치 절차로 진행하세요. 플러그인 코드는 사용자 권한의 Python으로 실행됩니다. 비공개 저장소도 보안 검토를 대신하지 않습니다.
@@ -105,7 +105,7 @@ hermes plugins doctor source --ci
 
 유닛 테스트는 실제 예약 작업을 등록하거나 실행하지 않습니다. 실제 예약 작업을 실행하는 **운영 검증**은 `python source/test_archive_task.py --live`이며, 적용 권한이 있는 환경에서만 실행하세요. `--home`, `--no-schedule`, `--no-collect`는 격리된 설치 점검에 사용할 수 있습니다.
 
-`verify_reinstall.py`는 실제 Hermes CLI와 가상 대화 한 건을 사용해 최초 수집 → Hermes 홈 삭제 → 새 홈 설치 → 기존 기록 재연결 → Vault를 보존하는 제거를 검증합니다. 원격 설치를 확인하려면 `--bundle` 대신 `--repo Gary-Y-Lee/Hermes_Plugin_Obsidian/source --ref <40자리-커밋-SHA>`를 사용합니다. 실제 사용자 기록이나 예약 작업은 변경하지 않습니다.
+`verify_reinstall.py`는 실제 Hermes CLI와 가상 대화 한 건을 사용해 최초 수집 → Hermes 홈 삭제 → 새 홈 설치 → 기존 기록 재연결 → Vault를 보존하는 제거를 검증합니다. 원격 설치를 확인하려면 `--bundle` 대신 `--repo gary3207/Hermes_Plugin_00.Obsidian/source --ref <40자리-커밋-SHA>`를 사용합니다. 실제 사용자 기록이나 예약 작업은 변경하지 않습니다.
 
 ## 보안·범위
 

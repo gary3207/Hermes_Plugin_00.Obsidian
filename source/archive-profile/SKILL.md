@@ -2,7 +2,7 @@
 name: hermes-archive-records
 description: Use when doing project work; consult shared Obsidian records.
 version: 1.2.0
-author: Gary-Y-Lee
+author: gary3207
 license: MIT
 platforms: [windows]
 metadata:
