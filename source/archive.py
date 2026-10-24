@@ -83,7 +83,8 @@ def component(value):
 
 def readable(text, limit=40):
     """Human file-name part: drops Windows/Obsidian-link/ownership-unsafe characters, keeps spaces and Korean."""
-    text = re.sub(r"[\x00-\x1f\x7f\\/:*?\"<>|\[\]#^'`%{}]+", " ", html.unescape(str(text)))
+    # '=' is dropped too: 'password=x' in a name would be re-masked by clean() into unsafe '"[REDACTED]"'.
+    text = re.sub(r"[\x00-\x1f\x7f\\/:*?\"<>|\[\]#^'`%{}=]+", " ", html.unescape(str(text)))
     # shortcut: 40-char cap keeps nested subagent paths under Windows MAX_PATH for typical Vault roots.
     return " ".join(text.split())[:limit].strip(" .") or "제목 없음"
 
@@ -400,7 +401,7 @@ class Archive:
         if current != self.mirror_digest:
             raise RuntimeError("Mirror manual edit conflict; preserved")
         fields = {
-            "sessions": {"path", "profile", "id", "title", "cwd", "parent", "created", "last_activity", "source_rows", "archived_rows", "failures", "chat_id", "files", "artifacts", "collected_at", "project_id"},
+            "sessions": {"path", "profile", "id", "title", "cwd", "parent", "created", "last_activity", "source_rows", "archived_rows", "failures", "chat_id", "files", "artifacts", "collected_at", "project_id", "named"},
             "projects": {"id", "name", "folder", "paths"},
             "groups": {"folder", "name", "events"},
         }
@@ -471,20 +472,26 @@ class Archive:
         dt = date(session.get("started_at"))
         name = readable(raw_title.removeprefix("Subagent: ")) + (f" - {readable(profile, 20)}" if profile != "default" else "")
         parent = self.parent_record(profile, session.get("parent_session_id"))
+        home = parent["path"].rsplit("/", 1)[0] + "/Subagents/" if parent else None
+        def files(summary):
+            if home:
+                return [summary, summary[:-3] + " - 대화.md", summary[:-3] + " - 도구.md"]
+            folder = summary.rsplit("/", 1)[0]
+            return [summary, folder + "/대화.md", folder + "/도구 실행.md"]
+        old = self.state["sessions"].get(key, {}).get("path", "")
+        # Freeze the name once a real title exists so user links survive later title edits.
+        if self.state["sessions"].get(key, {}).get("named") and (old.startswith(home) if home else old.startswith("40_Sessions/") and "/Subagents/" not in old):
+            return files(old)
         taken = {s["path"].casefold() for k, s in self.state["sessions"].items() if k != key}
         for suffix in ("", f" ({str(session['id'])[-6:]})"):
-            if parent:
-                stem = (f"{dt:%H%M} " if dt else "") + name + suffix
-                base = Path(parent["path"]).parent / "Subagents"
-                names = (stem + ".md", stem + " - 대화.md", stem + " - 도구.md")
+            if home:
+                summary = home + (f"{dt:%H%M} " if dt else "") + name + suffix + ".md"
             else:
                 stem = (f"{dt:%Y-%m-%d %H%M} " if dt else "") + name + suffix
-                base = Path("40_Sessions") / (dt.strftime("%Y-%m") if dt else "unknown") / stem
-                names = (stem + ".md", "대화.md", "도구 실행.md")
-            paths = [str(base / n).replace("\\", "/") for n in names]
-            if paths[0].casefold() not in taken:
+                summary = f"40_Sessions/{dt.strftime('%Y-%m') if dt else 'unknown'}/{stem}/{stem}.md"
+            if summary.casefold() not in taken:
                 break
-        return paths
+        return files(summary)
 
     def retire(self, old_files, keep):
         """Remove a moved session's previous generated files only when still byte-identical to what we wrote."""
@@ -554,7 +561,7 @@ class Archive:
             changed |= self.write(path, document)
         self.retire(old.get("files", []), paths)
         self.state["sessions"][key] = {"digest": content_hash, "collector_digest": self.collector_digest, "path": paths[0], "profile": profile,
-            "id": session["id"], "title": title, "cwd": session.get("cwd"), "parent": session.get("parent_session_id"), "model": u["model"],
+            "id": session["id"], "title": title, "cwd": session.get("cwd"), "parent": session.get("parent_session_id"), "model": u["model"], "named": bool(session.get("title")),
             "created": session.get("started_at"), "last_activity": session.get("last_activity_at"),
             "source_rows": len(messages), "archived_rows": len(allowed), "failures": found,
             "chat_id": session.get("chat_id"), "files": paths, "artifacts": self.artifact_paths(allowed),
@@ -772,6 +779,7 @@ views:
         self.write("90_Templates/Current-State.md", note("current-state", "현재 작업 상태", CURRENT_STATE_BODY, generated=False), authored=True)
         self.write("90_Templates/Lesson.md", note("lesson", "교훈 제목", "## 적용 조건\n\n## 증상\n\n## 확인된 원인\n\n## 예방·해결\n\n## 실제 검증\n\n## 근거 세션 링크\n\n## 상태\n\n추정 / 검증됨 / 폐기됨\n", status="unverified", generated=False), authored=True)
         health_body = f"- 마지막 수집: {result['updated']}\n- 결과: {'오류 있음' if result['errors'] else '정상'}\n- 누적 세션: {result['sessions']}\n- 이번 변경 세션: {result['sessions_written']}\n- 누적 저장 행: {sum(s['source_rows'] for s in records)}\n- 프로젝트: {result['projects']}\n- Group Chat: {result['groups']}\n- Profile 발견: {len(homes)}\n- 구조화 오류 기록: {result['failures']} (미해결 수가 아님)\n- 실행 시간: {result['duration_seconds']}초 (인덱스 작성 전)\n\n## 수집 오류\n\n" + ("\n".join("- " + str(e) for e in result["errors"]) or "없음")
+        health_body += "\n\n## 보존한 사용자 수정\n\n" + ("\n".join(f"- `{p}` · 사용자/Agent가 수정한 스킬이라 원본 번들로 덮어쓰지 않음. 번들 갱신을 받으려면 내용을 번들에 합치세요." for b in self.state.get("bootstrap", {}).values() for p in b.get("preserved", [])) or "없음")
         health_body += "\n\n## 범위·한계\n\n- DB에 저장된 로컬 세션만 수집합니다. 저장 전 충돌, 이미 삭제된 과거 기록, 다른 PC의 DB는 복구하지 않습니다.\n- 원본 DB는 읽기 전용이며 삭제·prune하지 않습니다.\n- 시작하지 않은 새 Profile도 발견하면 안내 스킬·플러그인을 설치합니다. 실제 적용은 해당 Profile의 다음 새 세션에서 확인하세요.\n- 수집기는 실행할 때만 상태를 갱신합니다. 이 페이지의 마지막 수집 시간이 오래되면 작업 스케줄러를 확인하세요.\n- 치명적 오류 상세 분류는 로컬 runtime/fatal.json과 작업 스케줄러 LastTaskResult를 확인하세요."
         self.write("60_Operations/00_Archive-Health.md", note("archive-health", "수집 상태", health_body, updated=result["updated"], sessions=result["sessions"], errors=len(result["errors"]), generated=True))
 
@@ -821,14 +829,23 @@ def bootstrap_profile(archive, profile, home):
     assert_managed_paths(home, [path for _, target in payloads for path in
                               (target, target.with_name(target.name + ".archive-tmp"))])
     new_hashes = {}
+    preserved = []
     for data, target in payloads:
         wanted = digest(data)
         new_hashes[str(target)] = wanted
         current = digest(target.read_bytes()) if target.exists() else None
         if current is not None and current != wanted and current != hashes.get(str(target)):
-            raise RuntimeError(f"Profile {profile}: archive-managed file was modified; preserved: {target}")
-    boot[profile] = {**previous, "files": dict(hashes)}
+            if target.name != "SKILL.md":
+                raise RuntimeError(f"Profile {profile}: archive-managed file was modified; preserved: {target}")
+            # Agents legitimately refine skills; keep the edit and report it, but never for plugin code.
+            preserved.append(str(target))
+            new_hashes.pop(str(target))
+            if str(target) in hashes:
+                new_hashes[str(target)] = hashes[str(target)]
+    boot[profile] = {**previous, "files": dict(hashes), "preserved": preserved}
     for data, target in payloads:
+        if str(target) in preserved:
+            continue
         wanted = digest(data)
         current = digest(target.read_bytes()) if target.exists() else None
         if current != wanted:
@@ -836,7 +853,7 @@ def bootstrap_profile(archive, profile, home):
             updated = True
         boot[profile]["files"][str(target)] = wanted
     config_stat = (home / "config.yaml").stat().st_mtime_ns
-    if not updated and previous.get("config_stamp") == config_stat:
+    if not updated and previous.get("config_stamp") == config_stat and previous.get("status") != "error":
         return
     command = archive.cfg.get("hermes_command") or shutil.which("hermes")
     if not command:
@@ -871,7 +888,7 @@ def bootstrap_profile(archive, profile, home):
         cli("config", "set", "sessions.auto_prune", "false")
         if cli("config", "get", "sessions.auto_prune").strip().lower() != "false":
             raise RuntimeError(f"Profile {profile}: source-retention readback failed")
-    boot[profile] = {"status": "disabled-by-user" if explicitly_disabled else status, "files": new_hashes,
+    boot[profile] = {"status": "disabled-by-user" if explicitly_disabled else status, "files": new_hashes, "preserved": preserved,
                      "config_stamp": (home / "config.yaml").stat().st_mtime_ns, "verified": stamp(time.time()),
                      "previous_auto_prune": previous_prune}
     archive.save_state()  # A later Profile timeout must not undo earlier verified provisioning.

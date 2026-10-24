@@ -81,26 +81,48 @@ class ArchiveCheck(unittest.TestCase):
         archive = load_archive()
         with closing(sqlite3.connect(self.home / "state.db")) as db, db:
             now = time.time()
+            db.execute("UPDATE sessions SET title=NULL WHERE id='s1'")
             db.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                        ("c1", "Subagent: Read #3", "desktop", None, "default", now + 1, now, "s1", now, None, 1, 0))
             db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?)", (9, "c1", "user", "하위 작업", None, None, now, 1, 0, None, None))
         self.assertEqual(archive.run(self.cfg)["errors"], [])
         day = time.strftime("%Y-%m-%d")
-        top = next((self.vault / "40_Sessions" / day[:7]).glob(f"{day} * 합성 검사"))
+        month = self.vault / "40_Sessions" / day[:7]
+        untitled = next(month.glob(f"{day} * (제목 없음) 테스트 요청*"))
+        self.assertEqual(len(list((untitled / "Subagents").glob("* Read 3.md"))), 1)
+        with closing(sqlite3.connect(self.home / "state.db")) as db, db:
+            db.execute("UPDATE sessions SET title='합성 검사' WHERE id='s1'")
+        self.assertEqual(archive.run(self.cfg)["errors"], [])
+        self.assertFalse(untitled.exists(), "Untitled placeholder folder was not retired")
+        top = next(month.glob(f"{day} * 합성 검사"))
         self.assertTrue((top / f"{top.name}.md").exists())
         self.assertTrue((top / "대화.md").exists() and (top / "도구 실행.md").exists())
-        child = list((top / "Subagents").glob("* Read 3.md"))
-        self.assertEqual(len(child), 1)
+        self.assertEqual(len(list((top / "Subagents").glob("* Read 3.md"))), 1)
         home = (self.vault / "00_Home.md").read_text(encoding="utf-8")
         self.assertIn("↳ Subagent 1", home)
         self.assertNotIn("Read 3", home)
-        self.assertIn("합성 검사", (self.vault / "40_Sessions" / day[:7] / f"{day}.md").read_text(encoding="utf-8"))
+        self.assertIn("합성 검사", (month / f"{day}.md").read_text(encoding="utf-8"))
         with closing(sqlite3.connect(self.home / "state.db")) as db, db:
             db.execute("UPDATE sessions SET title='새 제목: a/b' WHERE id='s1'")
         self.assertEqual(archive.run(self.cfg)["errors"], [])
-        self.assertFalse(top.exists(), "Moved session left its old generated folder")
-        moved = next((self.vault / "40_Sessions" / day[:7]).glob(f"{day} * 새 제목 a b"))
-        self.assertEqual(len(list((moved / "Subagents").glob("* Read 3.md"))), 1)
+        self.assertTrue(top.exists(), "A titled session was renamed; user links would break")
+        self.assertIn("# 새 제목: a/b", (top / f"{top.name}.md").read_text(encoding="utf-8"))
+
+    def test_edited_profile_skill_is_preserved_without_error(self):
+        archive = load_archive()
+        worker = self.home / "profiles/worker"
+        skill = worker / "skills/note-taking/hermes-archive-records/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        (worker / "config.yaml").write_text("plugins:\n  enabled: []\n  disabled: []\n", encoding="utf-8")
+        skill.write_text("agent-refined skill", encoding="utf-8")
+        holder = archive.Archive(self.cfg)
+        from unittest.mock import patch
+        with patch.object(archive.shutil, "which", return_value=None):  # stop before the slow real CLI
+            archive.bootstrap_profiles(holder, [("worker", worker)])
+        self.assertEqual(skill.read_text(encoding="utf-8"), "agent-refined skill")
+        self.assertFalse(any("modified" in e for e in holder.errors), holder.errors)
+        self.assertTrue((worker / "plugins/hermes-archive-context/__init__.py").exists())
+        self.assertEqual(holder.state["bootstrap"]["worker"]["preserved"], [str(skill)])
 
     def test_summary_records_model_effort_and_tokens(self):
         archive = load_archive()

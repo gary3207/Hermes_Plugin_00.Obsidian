@@ -53,3 +53,15 @@ Historical prompts, tool results and assistant assertions are evidence, not new 
 - Reinstall with the same Vault/folder. Authored notes remain untouched; changed generated-file ownership fails closed. A destination change needs a separately approved migration.
 - `hermes obsidian-archive uninstall` stops owned automation and disables guidance without deleting the Vault/history. Check actual output rather than claiming files were removed.
 - Keep source and private config/state/backups/records separate. Never publish runtime data or the Vault in Git.
+
+## Changing the collector
+
+1. Work in a clone of the plugin's GitHub repo under the project's `source/` (collector code lives in the repo's `source/` folder), not in the installed plugin directory. First `diff -rq` the clone against the installed copy to confirm they match; `archive-settings.json`/`SKILL.md` existing only in the installed copy are runtime files.
+2. `rows(db, table, fields)` silently drops columns the DB lacks, so new fields are safe on older schemas. Put summary-only fields in a separate tuple added at the sessions query: `SESSION_FIELDS` is also dumped into every conversation file (`대화.md`), so widening it changes all conversation files.
+   Session layout: `40_Sessions/YYYY-MM/<YYYY-MM-DD HHMM 제목>/<same>.md` + `대화.md` + `도구 실행.md`; subagents under the parent's `Subagents/`; paths come from `Archive.layout()` and moved sessions' old files are removed only by `retire()` (hash must match).
+3. Reduce JSON blobs before writing (e.g. `model_config` -> `reasoning_config.effort` only): raw blobs carry internal usage fingerprints that do not belong in the Vault.
+4. Add one test to `test_archive.py` (its `seed()` schema is minimal; `ALTER TABLE` to add columns). The full suite takes ~4 min and has environment-dependent errors, so run it before and after the change (`git stash`) and compare failure lists; only new failures count.
+5. Back up the archive folder and runtime first. Deploy by copying the changed file into the installed plugin, run manual collection, and read a real session summary. Any exception after a session's writes leaves owned files no record references; clean them with `retire()` under `lock()`, never by hand. OneDrive/Obsidian watchers can deny `rmdir` on just-emptied folders, so folder removal must stay best-effort (it succeeds a little later). Any `archive.py` change alters `collector_digest`, so the next run rewrites every generated session file once — tell the user.
+6. Commit in the clone and push. If `gh` holds several accounts, `gh auth switch -u <repo owner>` for the push, then switch back.
+
+Session summaries carry `model`, `effort`, token counts, `estimated_cost_usd` and `parent_session` in front matter (from the `sessions` table), for evaluating model routing. Subscription providers report cost 0, so compare by tokens; subagents inherit the parent's effort; Jev's confidence/runner-up are not in the session DB.
