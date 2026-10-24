@@ -77,6 +77,31 @@ class ArchiveCheck(unittest.TestCase):
             os.rmdir(alias) if os.name == "nt" else alias.unlink()
         self.tmp.cleanup()
 
+    def test_readable_paths_nest_subagents_and_retire_moved_files(self):
+        archive = load_archive()
+        with closing(sqlite3.connect(self.home / "state.db")) as db, db:
+            now = time.time()
+            db.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       ("c1", "Subagent: Read #3", "desktop", None, "default", now + 1, now, "s1", now, None, 1, 0))
+            db.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?)", (9, "c1", "user", "하위 작업", None, None, now, 1, 0, None, None))
+        self.assertEqual(archive.run(self.cfg)["errors"], [])
+        day = time.strftime("%Y-%m-%d")
+        top = next((self.vault / "40_Sessions" / day[:7]).glob(f"{day} * 합성 검사"))
+        self.assertTrue((top / f"{top.name}.md").exists())
+        self.assertTrue((top / "대화.md").exists() and (top / "도구 실행.md").exists())
+        child = list((top / "Subagents").glob("* Read 3.md"))
+        self.assertEqual(len(child), 1)
+        home = (self.vault / "00_Home.md").read_text(encoding="utf-8")
+        self.assertIn("↳ Subagent 1", home)
+        self.assertNotIn("Read 3", home)
+        self.assertIn("합성 검사", (self.vault / "40_Sessions" / day[:7] / f"{day}.md").read_text(encoding="utf-8"))
+        with closing(sqlite3.connect(self.home / "state.db")) as db, db:
+            db.execute("UPDATE sessions SET title='새 제목: a/b' WHERE id='s1'")
+        self.assertEqual(archive.run(self.cfg)["errors"], [])
+        self.assertFalse(top.exists(), "Moved session left its old generated folder")
+        moved = next((self.vault / "40_Sessions" / day[:7]).glob(f"{day} * 새 제목 a b"))
+        self.assertEqual(len(list((moved / "Subagents").glob("* Read 3.md"))), 1)
+
     def test_summary_records_model_effort_and_tokens(self):
         archive = load_archive()
         with closing(sqlite3.connect(self.home / "state.db")) as db, db:
@@ -85,7 +110,7 @@ class ArchiveCheck(unittest.TestCase):
             db.execute("UPDATE sessions SET model=?, model_config=?, input_tokens=1234, output_tokens=56, estimated_cost_usd=0.5",
                        ("gpt-x", '{"reasoning_config":{"effort":"high"},"_usage_anchor":{"base_last_fp":"FP_MUST_NOT_EXPORT"}}'))
         self.assertEqual(archive.run(self.cfg)["errors"], [])
-        summary = next(self.vault.glob("40_Sessions/**/00_Summary.md")).read_text(encoding="utf-8")
+        summary = next(self.vault.glob("40_Sessions/*/*/*합성 검사.md")).read_text(encoding="utf-8")
         self.assertIn("모델: `gpt-x` · Effort: `high`", summary)
         self.assertIn("입력 1,234 · 출력 56", summary)
         self.assertIn('effort: "high"', summary)
@@ -103,9 +128,9 @@ class ArchiveCheck(unittest.TestCase):
         home = (root / "00_Home.md").read_text(encoding="utf-8")
         self.assertIn('FROM "AI/Hermes/40_Sessions"', home)
         for path in root.rglob("*.md"):
-            if path.name not in {"10_Conversation.md", "00_Summary.md"}:
+            if path.name != "대화.md" and not path.name.endswith("합성 검사.md"):
                 self.assertNotIn("[[Hermes/", path.read_text(encoding="utf-8"))
-        conversation = next(root.rglob("10_Conversation.md")).read_text(encoding="utf-8")
+        conversation = next(root.rglob("대화.md")).read_text(encoding="utf-8")
         self.assertIn('Original [[Hermes/keep]] FROM "Hermes/keep"', conversation)
         self.assertIn("[[AI/Hermes/40_Sessions/", home)
 
@@ -141,10 +166,10 @@ class ArchiveCheck(unittest.TestCase):
         result = archive.run(self.cfg)
         self.assertEqual((result["sessions"], result["projects"], result["groups"]), (2, 1, 1))
         self.assertEqual(result["errors"], [])
-        self.assertIn("default--s1", (self.vault / "00_Home.md").read_text(encoding="utf-8"))
+        self.assertIn("합성 검사", (self.vault / "00_Home.md").read_text(encoding="utf-8"))
         self.assertIn("테스트 프로젝트", (self.vault / "60_Operations/20_Project-Map.md").read_text(encoding="utf-8"))
         self.assertEqual(custom.read_text(encoding="utf-8"), "handwritten")
-        generated = next(self.vault.rglob("00_Summary.md"))
+        generated = next(self.vault.rglob("*합성 검사.md"))
         generated.write_text("manual edit", encoding="utf-8")
         restored = archive.Archive(self.cfg)
         with self.assertRaisesRegex(RuntimeError, "Manual edit conflict"):
@@ -457,10 +482,10 @@ class ArchiveCheck(unittest.TestCase):
         group_text = "\n".join(p.read_text(encoding="utf-8") for p in (self.vault / "20_Group-Chats").rglob("*.md"))
         self.assertEqual(group_text.count("공용 그룹 요청"), 1)
         self.assertIn("정책 드라이버 결과", group_text)
-        self.assertIn("worker--s2", group_text)
+        self.assertIn("합성 검사 - worker", group_text)
         self.assertTrue((self.vault / "30_Profiles/worker/00_Profile.md").exists())
         project_text = "\n".join(p.read_text(encoding="utf-8") for p in (self.vault / "10_Projects").rglob("*.md"))
-        self.assertIn("default--s1", project_text)
+        self.assertIn("합성 검사]]", project_text)
         self.assertTrue((self.vault / "00_Home.md").exists())
         self.assertTrue((self.vault / "60_Operations/00_Archive-Health.md").exists())
 

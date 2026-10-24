@@ -35,10 +35,11 @@ hermes obsidian-archive setup --vault "D:/Obsidian/Oracle" --folder "AI/Work"
 ```text
 <Vault>/<지정 기록 폴더>/
 ├── 00_Home.md
+├── 세션 찾기.base      # Obsidian Bases 세션 검색표 (최초 1회 생성, 이후 사용자 편집 보존)
 ├── 10_Projects/        # 요구사항·결정·현재 상태·산출물 검증·세션 링크
 ├── 20_Group-Chats/     # 로컬 그룹 이벤트와 봇 세션 연결
 ├── 30_Profiles/        # Profile별 세션 인덱스
-├── 40_Sessions/        # Prompt·공개 응답·도구 기록; 원본은 한 번만 저장
+├── 40_Sessions/        # YYYY-MM/「YYYY-MM-DD HHMM 제목」/ 요약·대화·도구 실행, Subagent는 부모 아래 Subagents/; 날짜별 YYYY-MM-DD.md
 ├── 50_Lessons/         # 실패 분류함과 검증된 교훈
 ├── 60_Operations/     # 상태·작업 경로 매핑·재설치 소유권 ledger
 └── 90_Templates/      # 작성 기준

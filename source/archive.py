@@ -81,6 +81,13 @@ def component(value):
     return name
 
 
+def readable(text, limit=40):
+    """Human file-name part: drops Windows/Obsidian-link/ownership-unsafe characters, keeps spaces and Korean."""
+    text = re.sub(r"[\x00-\x1f\x7f\\/:*?\"<>|\[\]#^'`%{}]+", " ", html.unescape(str(text)))
+    # shortcut: 40-char cap keeps nested subagent paths under Windows MAX_PATH for typical Vault roots.
+    return " ".join(text.split())[:limit].strip(" .") or "제목 없음"
+
+
 def date(value):
     try:
         return datetime.fromtimestamp(float(value), KST) if 0 <= float(value) <= 4_200_000_000 else None
@@ -456,23 +463,73 @@ class Archive:
             output.append({"path": str(path), "status": "exists" if path.is_file() else "reported", "validation": "not-assessed"})
         return output
 
+    def parent_record(self, profile, parent_id):
+        return self.state["sessions"].get(f"{profile}:{parent_id}") if parent_id else None
+
+    def layout(self, key, profile, session, raw_title):
+        """Summary, conversation, tool paths: '40_Sessions/YYYY-MM/YYYY-MM-DD HHMM 제목/', subagents under the parent."""
+        dt = date(session.get("started_at"))
+        name = readable(raw_title.removeprefix("Subagent: ")) + (f" - {readable(profile, 20)}" if profile != "default" else "")
+        parent = self.parent_record(profile, session.get("parent_session_id"))
+        taken = {s["path"].casefold() for k, s in self.state["sessions"].items() if k != key}
+        for suffix in ("", f" ({str(session['id'])[-6:]})"):
+            if parent:
+                stem = (f"{dt:%H%M} " if dt else "") + name + suffix
+                base = Path(parent["path"]).parent / "Subagents"
+                names = (stem + ".md", stem + " - 대화.md", stem + " - 도구.md")
+            else:
+                stem = (f"{dt:%Y-%m-%d %H%M} " if dt else "") + name + suffix
+                base = Path("40_Sessions") / (dt.strftime("%Y-%m") if dt else "unknown") / stem
+                names = (stem + ".md", "대화.md", "도구 실행.md")
+            paths = [str(base / n).replace("\\", "/") for n in names]
+            if paths[0].casefold() not in taken:
+                break
+        return paths
+
+    def retire(self, old_files, keep):
+        """Remove a moved session's previous generated files only when still byte-identical to what we wrote."""
+        for relative in old_files:
+            if relative in keep:
+                continue
+            path = self.output_path(relative)
+            if path.exists():
+                if digest(path.read_bytes()) != self.state["files"].get(relative):
+                    self.errors.append(f"Moved session; edited old file preserved: {relative}")
+                    continue
+                path.unlink()
+            self.state["files"].pop(relative, None)
+            self.prune_empty(path.parent)
+
+    def prune_empty(self, folder):
+        # Best-effort: OneDrive/Obsidian watchers can deny rmdir on an empty folder; it holds no data.
+        for parent in (folder, *folder.parents):
+            if parent == self.root or not parent.is_relative_to(self.root) or not parent.is_dir() or any(parent.iterdir()):
+                break
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+
     def session(self, profile, session, messages):
         key = f"{profile}:{session['id']}"
-        dt = date(session.get("started_at"))
-        folder = Path("40_Sessions") / (dt.strftime("%Y/%m") if dt else "unknown") / f"{component(profile)}--{component(session['id'])}"
+        allowed = [m for m in messages if m.get("role") in {"user", "assistant", "tool"} and m.get("display_kind") != "hidden"]
+        public = [{**m, "tool_calls": None} for m in allowed if m.get("role") in {"user", "assistant"}]
+        user = next((m.get("content") or "" for m in public if m["role"] == "user"), "사용자 Prompt 없음")
+        raw_title = self.clean(session.get("title") or "")
+        if not raw_title and any(m["role"] == "user" for m in public):
+            raw_title = "(제목 없음) " + readable(self.clean(str(user)), 40)
+        raw_title = raw_title or str(session["id"])
+        paths = self.layout(key, profile, session, raw_title)
         content_hash = digest(packed({"session": session, "messages": messages}))
         old = self.state["sessions"].get(key, {})
-        if old.get("collector_digest") == self.collector_digest and old.get("digest") == content_hash and all((self.root / p).exists() for p in old.get("files", [])):
+        if old.get("collector_digest") == self.collector_digest and old.get("digest") == content_hash and old.get("path") == paths[0] and all((self.root / p).exists() for p in old.get("files", [])):
             for p in old["files"]:
                 if digest((self.root / p).read_bytes()) != self.state["files"].get(p):
                     raise RuntimeError(f"Manual edit conflict; preserved original: {p}")
             return False
-        allowed = [m for m in messages if m.get("role") in {"user", "assistant", "tool"} and m.get("display_kind") != "hidden"]
-        public = [{**m, "tool_calls": None} for m in allowed if m.get("role") in {"user", "assistant"}]
         tool = [m for m in allowed if m.get("role") == "tool" or m.get("tool_calls")]
         found = [{"message_id": m["id"], "tool": m.get("tool_name") or "assistant", "detail": self.clean(str(detail))} for m in allowed if (detail := failure(m.get("content")) if m.get("role") == "tool" else ("Failed assistant turn" if m.get("display_kind") == "failed_turn" else None))]
-        title = inline(self.clean(session.get("title") or session["id"]))
-        user = next((m.get("content") or "" for m in public if m["role"] == "user"), "사용자 Prompt 없음")
+        title = inline(raw_title)
         last = next((m.get("content") or "" for m in reversed(public) if m["role"] == "assistant"), "공개 응답 없음")
         u = usage(session)
         body = (f"- Session ID: `{session['id']}`\n- Profile: `{profile}`\n- 시작: {stamp(session.get('started_at'))}\n"
@@ -481,26 +538,23 @@ class Archive:
                 f"- 세션 상태: {'종료: ' + str(session.get('end_reason')) if session.get('ended_at') else '종료 미기록 (진행 중이라고 단정하지 않음)'}\n"
                 f"- 모델: `{u['model'] or '미기록'}` · Effort: `{u['effort'] or '미기록'}` · Provider: `{u['provider'] or '미기록'}` · API 호출: {u['api_call_count'] or 0}\n"
                 f"- Token: 입력 {u['input_tokens'] or 0:,} · 출력 {u['output_tokens'] or 0:,} · Reasoning {u['reasoning_tokens'] or 0:,} · Cache 읽기 {u['cache_read_tokens'] or 0:,} · Cache 쓰기 {u['cache_write_tokens'] or 0:,} · 추정 비용 ${u['estimated_cost_usd'] or 0:.4f} (구독 Provider는 0으로 표시될 수 있음)\n"
-                f"- {self.link(folder / '10_Conversation.md', '사용자 Prompt·공개 응답')}\n"
-                + (f"- {self.link(folder / '20_Tools.md', '도구 실행·검증 근거')}\n" if tool else "")
+                f"- {self.link(paths[1], '사용자 Prompt·공개 응답')}\n"
+                + (f"- {self.link(paths[2], '도구 실행·검증 근거')}\n" if tool else "")
                 + "\n## 최초 요청 발췌\n\n" + fenced(self.clean(str(user))[:1600])
                 + "\n\n## 최근 Agent 응답 발췌\n\n> 응답 발췌는 완료 판정·내용 검증이 아닙니다. 전체 원문을 확인하세요.\n\n" + fenced(self.clean(str(last))[:2000])
                 + "\n\n## 실패·차단 기록\n\n")
-        body += "\n".join(f"- m-{f['message_id']} · {f['tool']} · {self.link(folder / ('20_Tools.md' if f['tool'] != 'assistant' else '10_Conversation.md'))}\n\n{fenced(f['detail'])}" for f in found) or "구조화된 오류로 확인된 항목 없음. 자유문장의 오류는 자동 판정하지 않습니다."
+        body += "\n".join(f"- m-{f['message_id']} · {f['tool']} · {self.link(paths[2] if f['tool'] != 'assistant' else paths[1])}\n\n{fenced(f['detail'])}" for f in found) or "구조화된 오류로 확인된 항목 없음. 자유문장의 오류는 자동 판정하지 않습니다."
         text = note("session", title, body, session_id=session["id"], profile=profile, created=stamp(session.get("started_at")), failures=len(found), status="ended" if session.get("ended_at") else "unfinalized", archived_rows=len(allowed), source_rows=len(messages), parent_session=session.get("parent_session_id"), **{k: u[k] for k in ("model", "effort", "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "estimated_cost_usd")}, generated=True)
-        content_hash = digest(packed({"session": session, "messages": messages}))
-        paths = [str(folder / "00_Summary.md").replace("\\", "/"), str(folder / "10_Conversation.md").replace("\\", "/")]
         outputs = {paths[0]: text, paths[1]: self.render(session, public)}
         if tool:
-            path = str(folder / "20_Tools.md").replace("\\", "/")
-            paths.append(path)
-            outputs[path] = self.render(session, tool)
+            outputs[paths[2]] = self.render(session, tool)
+        paths = list(outputs)
         changed = False
         for path, document in outputs.items():
             changed |= self.write(path, document)
-        old = self.state["sessions"].get(key, {})
+        self.retire(old.get("files", []), paths)
         self.state["sessions"][key] = {"digest": content_hash, "collector_digest": self.collector_digest, "path": paths[0], "profile": profile,
-            "id": session["id"], "title": title, "cwd": session.get("cwd"), "parent": session.get("parent_session_id"),
+            "id": session["id"], "title": title, "cwd": session.get("cwd"), "parent": session.get("parent_session_id"), "model": u["model"],
             "created": session.get("started_at"), "last_activity": session.get("last_activity_at"),
             "source_rows": len(messages), "archived_rows": len(allowed), "failures": found,
             "chat_id": session.get("chat_id"), "files": paths, "artifacts": self.artifact_paths(allowed),
@@ -603,7 +657,7 @@ class Archive:
             self.write(folder / "20_Decisions.md", note("decisions", "결정 이력", "| 결정 | 이유 | 유효/폐기 | 근거 세션 |\n|---|---|---|---|\n\n새 결정으로 기존 결정을 변경할 때 이전 항목을 삭제하지 않고 폐기 표시합니다.", generated=False), authored=True)
             self.write(folder / "30_Current-State.md", note("current-state", "현재 작업 상태", CURRENT_STATE_BODY, generated=False), authored=True)
             self.write(folder / "45_Artifact-Checks.md", note("artifact-checks", "산출물 검증 기록", "| 산출물 경로 | 검증한 내용·명령 | 실제 결과 | 근거 세션 |\n|---|---|---|---|\n\n파일 존재와 정확성·실행 검증을 구분합니다. verified=true 쓰기 응답만으로 내용을 validated 처리하지 않습니다.", generated=False), authored=True)
-            body = "\n".join("- " + self.link(s["path"], s["title"]) for s in sorted(related, key=lambda s: s.get("created") or 0, reverse=True)) or "연결된 세션 없음"
+            body = self.session_table(related)
             self.write(folder / "50_Sessions.md", note("project-sessions", "관련 세션", body, generated=True))
             artifacts = {}
             for s in related:
@@ -618,12 +672,78 @@ class Archive:
         mapping = "\n\n".join(f"## {p['name']}\n\n" + "\n".join(f"- 실제 경로: `{x}`" for x in p["paths"]) + "\n- " + self.link(Path(p["folder"]) / "00_Overview.md") for p in projects)
         self.write("60_Operations/20_Project-Map.md", note("project-map", "작업 경로 → 프로젝트 기록", mapping or "등록 프로젝트 없음", generated=True))
 
+    def top_level(self, records):
+        """User-started sessions, newest first, plus subagent counts; subagents are listed under their parent instead."""
+        kids = {}
+        for s in self.state["sessions"].values():
+            if self.parent_record(s["profile"], s.get("parent")):
+                kids[f"{s['profile']}:{s['parent']}"] = kids.get(f"{s['profile']}:{s['parent']}", 0) + 1
+        tops = [s for s in records if not self.parent_record(s["profile"], s.get("parent"))]
+        return sorted(tops, key=lambda s: s.get("created") or 0, reverse=True), kids
+
+    @staticmethod
+    def when(s, fmt="%Y-%m-%d %H:%M"):
+        dt = date(s.get("created"))
+        return dt.strftime(fmt) if dt else "시간 미기록"
+
+    def listing(self, records, limit=None, fmt="%Y-%m-%d %H:%M"):
+        tops, kids = self.top_level(records)
+        return "\n".join(f"- {self.when(s, fmt)} · {self.link(s['path'], s['title'])}"
+                         + (f" · ↳ Subagent {kids[k]}" if (k := f"{s['profile']}:{s['id']}") in kids else "")
+                         for s in tops[:limit]) or "세션 없음"
+
+    def session_table(self, records):
+        tops, kids = self.top_level(records)
+        if not tops:
+            return "연결된 세션 없음"
+        # Escaped pipe keeps wikilink aliases intact inside Markdown tables.
+        return "| 시작 | 세션 | 모델 | Subagent |\n|---|---|---|---|\n" + "\n".join(
+            f"| {self.when(s)} | {self.link(s['path'], s['title']).replace('|', chr(92) + '|')} | {s.get('model') or '미기록'} | {kids.get(s['profile'] + ':' + s['id'], 0)} |"
+            for s in tops)
+
     def indexes(self, homes, result):
         records = list(self.state["sessions"].values())
+        tops, _ = self.top_level(records)
+        days = {}
+        for s in tops:
+            if date(s.get("created")):
+                days.setdefault(self.when(s, "%Y-%m-%d"), []).append(s)
+        for day, items in days.items():
+            self.write(f"40_Sessions/{day[:7]}/{day}.md", note("session-day", day, self.listing(items, fmt="%H:%M"), sessions=len(items), generated=True))
+        base = f"""filters:
+  and:
+    - file.inFolder("{self.cfg['archive_folder']}/40_Sessions")
+    - 'type == "session"'
+views:
+  - type: table
+    name: 내가 시작한 세션
+    filters:
+      not:
+        - parent_session
+    order:
+      - created
+      - file.name
+      - model
+      - failures
+    sort:
+      - property: created
+        direction: DESC
+  - type: table
+    name: Subagent 포함 전체
+    order:
+      - created
+      - file.name
+      - parent_session
+      - model
+    sort:
+      - property: created
+        direction: DESC
+"""
+        self.write("세션 찾기.base", base, authored=True)
         for profile, home in homes:
             related = [s for s in records if s["profile"] == profile]
-            body = f"- Profile ID: `{profile}`\n- 실제 Profile 홈: `{home}`\n- 기록된 세션: {len(related)}\n\n## 관련 세션\n\n"
-            body += "\n".join("- " + self.link(s["path"], s["title"]) for s in sorted(related, key=lambda s: s.get("created") or 0, reverse=True)) or "세션 없음"
+            body = f"- Profile ID: `{profile}`\n- 실제 Profile 홈: `{home}`\n- 기록된 세션: {len(related)} (Subagent 포함)\n\n## 관련 세션\n\n"
+            body += self.listing(related)
             self.write(f"30_Profiles/{component(profile)}/00_Profile.md", note("profile", profile, body, profile=profile, generated=True))
         failures = []
         for s in records:
@@ -634,7 +754,7 @@ class Archive:
         home_body = "## 프로젝트\n\n" + ("\n".join("- " + self.link(Path(p["folder"]) / "00_Overview.md", p["name"]) for p in self.state.get("projects", {}).values()) or "등록 프로젝트 없음")
         home_body += "\n\n## Group Chat\n\n" + ("\n".join("- " + self.link(Path(g["folder"]) / "00_Overview.md", g["name"]) for g in self.state.get("groups", {}).values()) or "현재 수집 대상 DB에 Group Chat 없음")
         home_body += "\n\n## Profile\n\n" + "\n".join("- " + self.link(f"30_Profiles/{component(p)}/00_Profile.md", p) for p, _ in homes)
-        home_body += "\n\n## 최근 세션\n\n" + "\n".join("- " + self.link(s["path"], s["title"]) for s in sorted(records, key=lambda s: s.get("created") or 0, reverse=True)[:30])
+        home_body += "\n\n## 최근 세션\n\n" + f"- 검색·정렬: [[{self.cfg['archive_folder']}/세션 찾기.base|세션 찾기]] · 날짜별: " + (" · ".join(self.link(f"40_Sessions/{d[:7]}/{d}.md", d[5:]) for d in sorted(days, reverse=True)[:14]) or "없음") + "\n\n" + self.listing(records, 30)
         home_body += f"\n\n## 실패·운영 상태\n\n- [[{self.cfg['archive_folder']}/50_Lessons/00_Index|검증된 교훈]]\n- [[{self.cfg['archive_folder']}/50_Lessons/10_Failure-Inbox|실패·차단 분류함]]\n- [[{self.cfg['archive_folder']}/60_Operations/00_Archive-Health|수집 상태]]\n- [[{self.cfg['archive_folder']}/60_Operations/10_Record-Policy|기록·보안 정책]]\n\n## Dataview: 오류를 기록한 세션\n\n```dataview\nTABLE created AS 시작, profile AS 봇, failures AS 오류기록\nFROM \"{self.cfg['archive_folder']}/40_Sessions\"\nWHERE type = \"session\" AND failures > 0\nSORT created DESC\nLIMIT 30\n```\n\n> 상세 원문은 실행되지 않는 text 코드블록으로 보존됩니다. 오류기록 수는 미해결 오류 수가 아닙니다."
         self.write("00_Home.md", note("home", "Hermes 기록", home_body, generated=True))
         policy = ("## 수집·보안\n\n- 로컬 DB는 읽기 전용이며 삭제·prune하지 않습니다. 수집은 네트워크·LLM 호출 없이 실행됩니다.\n"
@@ -800,7 +920,10 @@ def run(cfg, force=False):
                         existing = archive.state["sessions"].get(f"{profile}:{s['id']}", {})
                         signature = digest(packed(s))
                         old = time.time() - float(s.get("last_activity_at") or s.get("started_at") or 0) > 86400
-                        if not force and not missing and existing.get("signature") == signature and (s.get("ended_at") or old):
+                        parent = archive.parent_record(profile, s.get("parent_session_id"))
+                        # A subagent follows its parent's folder when the parent is renamed.
+                        placed = not parent or existing.get("path", "").startswith(parent["path"].rsplit("/", 1)[0] + "/Subagents/")
+                        if not force and not missing and placed and existing.get("signature") == signature and (s.get("ended_at") or old):
                             continue
                         messages = rows(db, "messages", MESSAGE_FIELDS, "WHERE session_id=?", (s["id"],), "ORDER BY timestamp,id")
                         sessions_written += int(archive.session(profile, s, messages))
@@ -816,6 +939,10 @@ def run(cfg, force=False):
             action(base)
         except Exception as exc:
             archive.errors.append(archive.clean(f"{action.__name__}: {type(exc).__name__}: {exc}"))
+    sessions_dir = archive.root / "40_Sessions"
+    if sessions_dir.is_dir():  # Retry folders a watcher kept from an earlier move.
+        for folder in sorted((p for p in sessions_dir.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            archive.prune_empty(folder)
     result = {"sessions": len(archive.state["sessions"]), "sessions_written": sessions_written,
               "projects": len(archive.state.get("projects", {})), "groups": len(archive.state.get("groups", {})),
               "failures": sum(len(s["failures"]) for s in archive.state["sessions"].values()),
